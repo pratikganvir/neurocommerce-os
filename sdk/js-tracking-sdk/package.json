@@ -1,0 +1,18 @@
+{
+  "name": "@neurocommerce/tracking-sdk",
+  "version": "1.0.0",
+  "description": "Client-side event tracking SDK for NeuroCommerce OS",
+  "main": "neurocommerce.js",
+  "scripts": {
+    "build": "esbuild neurocommerce.js --bundle --minify --outfile=neurocommerce.min.js",
+    "test": "jest",
+    "publish": "npm run build && npm publish"
+  },
+  "keywords": ["ecommerce", "tracking", "analytics", "ai"],
+  "author": "NeuroCommerce",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.19.0",
+    "jest": "^29.0.0"
+  }
+}

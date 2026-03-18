@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../llm_verify/llm-verify"
+		},
+		{
+			"path": "../neuroecommerce_agent"
+		},
+		{
+			"path": "."
+		}
+	],
+	"settings": {}
+}

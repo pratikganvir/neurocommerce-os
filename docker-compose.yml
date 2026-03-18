@@ -1,0 +1,248 @@
+services:
+  # Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: neurocommerce-postgres
+    environment:
+      POSTGRES_USER: neurocommerce
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: neurocommerce
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neurocommerce"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Analytics Database
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: neurocommerce-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: neurocommerce
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Cache
+  redis:
+    image: redis:7-alpine
+    container_name: neurocommerce-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Message Queue
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: neurocommerce-kafka
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: neurocommerce-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_SYNC_LIMIT: 2
+      ZOOKEEPER_INIT_LIMIT: 5
+    healthcheck:
+      test: ["CMD", "echo", "ruok", "|", "nc", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # API Service
+  api:
+    build:
+      context: ./backend
+      dockerfile: api/Dockerfile
+    container_name: neurocommerce-api
+    ports:
+      - "8000:8000"
+    environment:
+      # From .env or docker-compose overrides
+      ENVIRONMENT: development
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      API_LOG_LEVEL: info
+      
+      # Database
+      DATABASE_URL: postgresql://neurocommerce:password@postgres:5432/neurocommerce
+      CLICKHOUSE_URL: http://clickhouse:8123/neurocommerce
+      
+      # Cache
+      REDIS_URL: redis://redis:6379/0
+      
+      # Message Queue
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CONSUMER_GROUP: neurocommerce-group
+      
+      # Security
+      JWT_SECRET_KEY: dev-jwt-key-change-in-production
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRATION_HOURS: 24
+      
+      # Roles
+      DEFAULT_USER_ROLE: viewer
+      DEFAULT_ADMIN_ROLE: admin
+      
+      # CORS
+      CORS_ORIGINS: http://localhost:3000,http://localhost:3001
+      ALLOWED_HOSTS: localhost,127.0.0.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      zookeeper:
+        condition: service_started
+    volumes:
+      - ./backend/api:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Event Workers
+  workers:
+    build:
+      context: ./backend/workers
+      dockerfile: Dockerfile
+    container_name: neurocommerce-workers
+    environment:
+      ENVIRONMENT: development
+      
+      # Database
+      DATABASE_URL: postgresql://neurocommerce:password@postgres:5432/neurocommerce
+      CLICKHOUSE_URL: http://clickhouse:8123/neurocommerce
+      
+      # Cache
+      REDIS_URL: redis://redis:6379/0
+      
+      # Message Queue
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CONSUMER_GROUP: neurocommerce-group
+      
+      # Logging
+      API_LOG_LEVEL: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      zookeeper:
+        condition: service_started
+    volumes:
+      - ./backend/workers:/app
+    command: python main.py
+
+  # Frontend Service
+  frontend:
+    build:
+      context: ./frontend/dashboard
+      dockerfile: Dockerfile
+    container_name: neurocommerce-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      REACT_APP_API_URL: http://localhost:8000
+      REACT_APP_ENVIRONMENT: development
+      NODE_ENV: development
+    depends_on:
+      - api
+    volumes:
+      - ./frontend/dashboard:/app
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev
+
+  # ML Inference Service
+  inference:
+    build:
+      context: ./ml/inference
+      dockerfile: Dockerfile
+    container_name: neurocommerce-inference
+    ports:
+      - "8001:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/1
+      ENVIRONMENT: development
+    depends_on:
+      - redis
+    volumes:
+      - ./ml/inference:/app
+      - ./ml/training/models:/models
+    command: python app.py
+
+  # Prometheus Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: neurocommerce-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+
+  # Grafana Dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: neurocommerce-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: neurocommerce-network

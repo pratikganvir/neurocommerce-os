@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workers
+  namespace: neurocommerce
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: workers
+  template:
+    metadata:
+      labels:
+        app: workers
+    spec:
+      containers:
+      - name: workers
+        image: neurocommerce/workers:latest
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: url
+        - name: KAFKA_BROKERS
+          value: kafka:9092
+        - name: REDIS_URL
+          value: redis://redis:6379/0
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference
+  namespace: neurocommerce
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: inference
+  template:
+    metadata:
+      labels:
+        app: inference
+    spec:
+      containers:
+      - name: inference
+        image: neurocommerce/inference:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: REDIS_URL
+          value: redis://redis:6379/1
+        - name: MODELS_DIR
+          value: /models
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "1000m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+        volumeMounts:
+        - name: models
+          mountPath: /models
+      volumes:
+      - name: models
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference
+  namespace: neurocommerce
+spec:
+  type: ClusterIP
+  selector:
+    app: inference
+  ports:
+  - protocol: TCP
+    port: 8000
+    targetPort: 8000
